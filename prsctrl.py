@@ -1,16 +1,16 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 # prscrtl.py
 #	A user interface for the PressureController2
 #
 # M. Hopcroft
 #   hopcroft@reddogresearch.com
-# Copyright 2016
+# Copyright 2020
 #
 # This software is distributed under the terms of the MIT License
 #
-# 	The MIT License (MIT) Copyright (c) 2016, Matthew A. Hopcroft
-# 
+# 	The MIT License (MIT) Copyright (c) 2016
+#
 # 	Permission is hereby granted, free of charge, to any person
 # obtaining a copy of this software and associated documentation files
 # (the "Software"), to deal in the Software without restriction,
@@ -18,10 +18,10 @@
 # publish, distribute, sublicense, and/or sell copies of the Software,
 # and to permit persons to whom the Software is furnished to do so,
 # subject to the following conditions:
-# 
+#
 # 	The above copyright notice and this permission notice shall be
 # included in all copies or substantial portions of the Software.
-# 
+#
 # 	THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
 # EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
 # MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
@@ -42,7 +42,7 @@ try:
 	import serial.tools.list_ports
 except:
 	print("")
-	print("ERROR: The pyserial module cannot be imported (requires version 3+).")
+	print("ERROR: The pyserial module cannot be imported.")
 	print(' Install the module with "pip install pyserial".')
 	print("")
 	sys.exit(1)
@@ -50,7 +50,7 @@ import glob
 import curses
 import curses.textpad as textpad
 
-versionstr = "prsctrl v1.22"
+versionstr = "prsctrl v2.0beta"
 
 # conversion factors for pressure
 CountsPerkPa = 3.9605	# conversion factor for the Honeywell ASDXRRX015 sensor
@@ -64,7 +64,7 @@ def main():
 	print(' Local time is ' + time.strftime("%Y/%m/%d-%H:%M:%S",appStartTime))
 	print('')
 
-	verbose = 1
+	verbose = 2
 
 	bytesize=8
 	parity='N'
@@ -72,10 +72,15 @@ def main():
 	timeout=3
 	target_baudrate=115200
 
-	port_name = get_port_name()
-	if port_name is None:
-		print("prsctrl: No controllers connected! (exit)")
-		return
+	# User can specify the Arduino port on the command line
+	if len(sys.argv) < 2:
+		port_name = get_port_name(devdir="/dev/",verbose=verbose)
+		if port_name is None:
+			print("prsctrl: No controllers connected! (exit)")
+			return
+	else:
+		port_name = sys.argv[1]
+		print(' Using serial port at: {0}'.format(port_name))
 
 	s = serial.Serial(port_name, baudrate=target_baudrate, bytesize=bytesize, parity=parity, stopbits=stopbits, timeout=timeout)
 	if verbose >= 1: print("Establishing communication with Controller at: " + s.name)
@@ -91,11 +96,11 @@ def main():
 		time.sleep(1)
 		send(s,'vr',verbose)
 		time.sleep(1)
-		
+
 	s.reset_input_buffer()
 	print("")
-	verstr = sendcmd(s,'vr',verbose)	
-	
+	verstr = sendcmd(s,'vr',verbose)
+
 	if verstr is None:
 		print("prsctrl: Unable to connect to controller! (exit)")
 		return
@@ -145,7 +150,7 @@ def prsScreen(stdscr,s,verbose=1):
 		menu['valvepos']="S - = -+- = - V"
 	else:
 		menu['valvepos']="S - X -+- X - V"
-			
+
 	if cmode == 0:
 		menu['control']="[G] Start Control"
 	else:
@@ -330,6 +335,7 @@ def scrUserInp(stdscr,prompt):
 	curses.noecho()
 	return userinp
 
+
 ####
 # create a feedback window ("message dialog")
 def scrMessage(stdscr,prompt):
@@ -465,6 +471,7 @@ def sendcmd(s,cmd,verbose=1):
 	if verbose >=2: print("  {0}... {1}".format(cmd, response))
 	return response
 
+
 ####
 # return a numeric value
 def getval(s,cmd,verbose=1):
@@ -479,15 +486,15 @@ def getval(s,cmd,verbose=1):
 	except:
 		return None
 
+
 ####
 # read response strings from the serial port
 def read(s,verbose=1):
 	"""read(s,verbose) reads a response string from the serial device"""
 	data = ''
-	k=0
 	while 1:
-		data += s.read(size=1)
-		k += 1 # count the number of bytes read
+		data += s.read(size=1).decode('utf-8')
+		if verbose >= 4: print('  read: received ' + str(len(data)) + ' bytes')
 		if len(data)==0:
 			if verbose >= 1: print("  read: timeout (" + str(s.timeout) + " sec)")
 			return None
@@ -495,27 +502,27 @@ def read(s,verbose=1):
 		pos = data.find('\r\n')
 		if pos >= 0:
 			line = data[:pos]
-			if verbose >= 3: print('  read: received ' + str(len(line)) + ' bytes')
+			if verbose >= 3: print('  read: received "' + line + '"')
 			if line.find(";")>=0 or line.find("RECV")>=0 or line.find("CTRL")>=0:
-				k = 0
 				pos = 0
 				data = ''
-				if verbose >= 3: print('  read: received "' + line + '"')
 			else:
 				return line
 
-		# timeout if no terminator is received
-		if k > 256:
+		# timeout if no line terminator is received
+		if len(data) > 256:
 			print("  read: max bytes read with no CR\LF (is data streaming?)")
 			return ''
+
 
 ####
 # send command strings to the serial port
 def send(s,cmd,verbose=1):
 	"""send(s,cmd,verbose) sends a command string to the serial device"""
 	if verbose >= 3: print("  send command " + cmd)
+	cmd = cmd + '\r\n'
 	try:
-		s.write(cmd + '\r\n')
+		s.write(cmd.encode('utf-8'))
 		s.flush()
 	except Exception as ex:
 		print("send: There was an error in writing ( send() )")
@@ -527,9 +534,9 @@ def send(s,cmd,verbose=1):
 def get_port_name(devdir="/dev/",verbose=1):
 	"""get_port_name(devdir,verbose) returns the name of the serial port for the controller.
 	Assumes an Arduino using a virtual serial port. Duemilanove only supported."""
-	
+
 	# Note that we could use the pyserial tools.list_ports for more robust operation
-	
+
 	# determine OS
 	from sys import platform as _platform
 	if _platform == "linux" or _platform == "linux2":
@@ -537,7 +544,7 @@ def get_port_name(devdir="/dev/",verbose=1):
 
 	elif _platform == "darwin":	# Mac OS X
 		#tty_str = "tty.usbserial-*" # for Duemilanove. Need usbmodem for Uno
-		tty_str = "tty.usb*" # generic match, will pick up other devices
+		tty_str = ["tty.usb*"] # generic match, will pic up other devices
 
 	elif _platform == "win32":
 		printf("ERROR: Windows is not supported")
