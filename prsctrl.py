@@ -77,12 +77,17 @@ def main():
 		port_name = get_port_name(devdir="/dev/",verbose=verbose)
 		if port_name is None:
 			print("prsctrl: No controllers connected! (exit)")
-			return
+			sys.exit(1)
 	else:
 		port_name = sys.argv[1]
 		print(' Using serial port at: {0}'.format(port_name))
 
-	s = serial.Serial(port_name, baudrate=target_baudrate, bytesize=bytesize, parity=parity, stopbits=stopbits, timeout=timeout)
+	try:
+		s = serial.Serial(port_name, baudrate=target_baudrate, bytesize=bytesize, parity=parity, stopbits=stopbits, timeout=timeout)
+	except:
+		print('ERROR: Unable to open port "{0}"'.format(port_name))
+		sys.exit(2)
+
 	if verbose >= 1: print("Establishing communication with Controller at: " + s.name)
 
 	# test connection to controller

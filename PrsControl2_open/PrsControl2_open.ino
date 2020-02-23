@@ -9,7 +9,7 @@ Arduino PressureController2OS
 Matt Hopcroft, Red Dog Research
  hopcroft@reddogresearch.com
 
-Copyright 2016
+Copyright 2020
 
 This code is distributed under the GPLv3 license. It includes independent libraries which
   are distributed under their own licenses. See the links below for documentation and sources
@@ -43,8 +43,8 @@ This code is distributed under the GPLv3 license. It includes independent librar
 #define SensorIn 1
 
 // firmware version
-char verstring[25] = "PressureController2 OSv1";
-int vernum = 1; // match above
+char verstring[25] = "PressureController2 OSv2";
+int vernum = 2; // match above
 
 String inputString = "";         // a string to hold incoming commands
 boolean stringComplete = false;  // flag for command string is complete
@@ -84,10 +84,10 @@ int errorMax = 0; // maximum error value
 double PID_ctrl;  // Result from PID calculation
 byte VA_Out, VE_Out; // 8-bit PWM output value
 // valve operation parameters
-byte vaMin = 95;
-byte vaSpan = 120;
 byte veMin = 75;
 byte veSpan = 100;
+byte vaMin = 95;
+byte vaSpan = 120;
 
 // PID parameters
 double targetPressure = sensorZero;
@@ -118,7 +118,8 @@ unsigned long wPer[max_waveforms];  // the Period
 int wDuty[max_waveforms];           // the Duty Cycle
 unsigned long wTime[max_waveforms]; // the execution Time
 boolean runList = false;  // are we executing the list or not
-int keepSetpoint = 0; // persistent setpoint (automatic control on start) (beta feature v21)
+int numRepeat = 0; // how many times has the waveform list repeated
+int waveRpt = 0; // how many times is the waveform list allowed to repeat
 
 // EEPROM addresses (memory map) in bytes offset from zero.
 //     1024 bytes total on Atmega328 (Uno, Duemilanove)
@@ -130,18 +131,22 @@ const int filterLP_addr = 68; // int cutoff
 const int sensorZero_addr = 70; // int sensorZero
 const int sampleTime_addr = 72; // int sampleTime (for PID controller)
 const int valveMinMax_addr = 78; // four bytes: vaMin, vaSpan, veMin, veSpan
-//const int verString_addr = xx; // char[25] for version identifier
 
 // time keeping
 unsigned long dTime = 0;
 //double lTime = 0;
-unsigned long time_run, time_prev; // timing for data output;
+unsigned long time_prev; // timing for data output;
 unsigned long time_wave, time_cmd; // timing for waveform list;
 unsigned long time_err = 0;
 unsigned long time_errMax = 0;
 
 // functions
+int sendData = 0;               // continuously transmit data to USB host
+int makeData = 5;               // timer for data generation, default 5 ms
+int dataInterval = 50;          // transmit data periodically, default 50 ms = 20 Hz
+int printData = dataInterval;   // timer for data transmission
 boolean debug = true;           // print debug messages
+boolean debugPressure = false;   // print pressure sensor readings once per sec
 
 // // // //
 
@@ -276,8 +281,9 @@ void setup() {
   if (debug == true) {
     blinker(LED_onboard, 3);
   }
-
-  targetPressure = sensorZero; // init setpoint
+  
+  // init setpoint to zero
+  targetPressure = sensorZero; 
   
   //Serial.println(verstring);
   time_prev = millis(); // timer for data streaming
@@ -292,15 +298,16 @@ void setup() {
 void loop() {
 
   // record time each time loop() iterates
-  time_run = millis();
+  unsigned long time_run = millis();
   unsigned long time_loop = time_run - time_prev;
   time_prev = time_run;
 
-  if (runList == false) {
-    time_wave = time_run; // time for the current waveform step
-  }
+//  if (runList == false) {
+//    time_wave = time_run; // time for the current waveform step
+//  }
 
-
+  ////////
+  // Execute waveform program if runList is true
   // Compute target pressure for the current waveform program (const, sin, etc)
   //  Each waveform step is executed for time_cmd ms, then move to the next waveform
   if (runList == true) {
@@ -327,35 +334,45 @@ void loop() {
       }
     } else { // advance to next waveform in list
       index_cmd++;
-      time_wave = millis();
+      time_wave = millis(); // time_wave is start time of each waveform
+      // waveform status output
+      if (debug == true) {
+        //Serial.println(";"); // to interrupt data output
+        Serial.print("WAVE"); Serial.println(index_cmd,DEC);
+      }
       
       if (index_cmd >= index_prog) { // all waveforms have been executed
-        runList = false;
         index_cmd = 0;
+        // v28+: at end of waveform list, restart list instead of stopping
+        numRepeat++; // counter for waveform repeats
+        if (debug == true) {
+          Serial.print("End waveform list ("); Serial.print(numRepeat, DEC); Serial.println(")");
+        }
+      }
+      
+      // go to next waveform in list
+      // set PID parameters according to waveform type
+      if (wType[index_cmd] == 'c' || wType[index_cmd] == 'q') {
+        valvePID.SetTunings(pid_hold.Kp, pid_hold.Ki, pid_hold.Kd);
+      } else {
+        valvePID.SetTunings(pid_track.Kp, pid_track.Ki, pid_track.Kd);
+      }
+
+      // waveform list has repeated the specified number of times
+      if (waveRpt > 0 && numRepeat >= waveRpt) { // NB these values are bytes
+        // stop waveforms
+        Serial.println(";"); // to interrupt data output
+        Serial.println("WSTP");
+        runList = false;
         // go to "hold" settings in PID
         valvePID.SetTunings(pid_hold.Kp, pid_hold.Ki, pid_hold.Kd);
-        if (debug == true) {
-          Serial.println("Finished waveform list.");
-        }
-        
-      } else { // go to next waveform in list
-        // set PID parameters according to waveform type
-        if (wType[index_cmd] == 'c' || wType[index_cmd] == 'q') {
-          valvePID.SetTunings(pid_hold.Kp, pid_hold.Ki, pid_hold.Kd);
-        } else {
-          valvePID.SetTunings(pid_track.Kp, pid_track.Ki, pid_track.Kd);
-        }
-        blinker(LED_status, 1);
-        if (debug == true) {
-          Serial.print("Advancing to next programmed waveform: ");
-          Serial.print(wType[index_cmd]);
-          Serial.print(",");
-          Serial.println(index_cmd, DEC);
-          blinker(LED_onboard, index_cmd);
-        }
-        
       }
-    }
+      
+      if (debug == true) {
+        blinker(LED_onboard, index_cmd+1); // NB this takes significant time
+      }
+ 
+    } // end advance waveform index
     
     if (debug == true && time_run % 1000 < 5) {
       Serial.print("Target: ");
@@ -414,26 +431,83 @@ void loop() {
   }
 
 
+  /////////////////////
+  // Send the results to the host computer
+  //  string format: (max 64 bytes incl LF)
+  //   $time stamp,pressure sensor,target pressure,PID_value,vacuum_out,vent_out
+  //  send rate of 10ms with baud rate of 57600 typically ok
+  // v22: generate data at one rate, and trigger host to processor data at another (slower) rate
+  // Note: the "comparison timer" is more reliable than the "mod timer"
+  //   See: http://www.forward.com.au/pfod/ArduinoProgramming/TimingDelaysInArduino.html
+
+  // generate data strings at makeData intervals
+  if (sendData > 0) makeData -= time_loop;
+  //Serial.println(makeData, DEC);
+  if (sendData > 0 && makeData <= 0 ) {
+    String output_string = String( "$" + String(time_run) + "," + String(currentPressure) + "," + String(targetPressure) + "," + String(PID_ctrl) + "," + String(VA_Out) + "," + String(VE_Out) );
+    Serial.print(output_string); // Serial.print(" : ");
+    makeData += sendData;
+  }
+  // send a line terminator at printData intervals
+  if (sendData > 0) printData -= time_loop;
+  //Serial.println(printData, DEC);
+  if (sendData > 0 && printData <= 0 ) {
+    Serial.println(";"); // the host does not process data until it receives the line terminator (cr/lf)
+    printData += dataInterval;
+  }
+
+  
   /////////////////
   // If a command string has been received from the host computer,
   //  process the command
   if (stringComplete) {
     Serial.println(";"); // this separates commands from the data stream
+    
     if (debug == true) {
       Serial.println("RECV " + inputString);
       blinker(LED_onboard, 1);   // blink led
       blinker(LED_status, 1);   // blink led
     }
 
+
     if (inputString.startsWith("vr")) {   // send version info
       Serial.println(verstring);
     }
+
     
     else if (inputString.startsWith("bk")) {   // blink the onboard LED
       if (debug == true) {
         blinker(LED_onboard, inputString.substring(2).toInt());   // blink led
       }
       blinker(LED_status, inputString.substring(2).toInt());   // blink led
+      Serial.println("OK");
+    }
+
+
+    else if (inputString.startsWith("st")) {   // return status information
+      Serial.print("Pressure Control: "); Serial.println(valvePID.GetMode());
+      Serial.print("Current Pressure: "); Serial.print(currentPressure, 2); Serial.println(" counts");
+      Serial.print("Target Pressure: "); Serial.print(targetPressure, 2); Serial.println(" counts");
+      Serial.print("Waveform List Run: "); Serial.println(runList);
+      Serial.print("Current Waveform: "); Serial.print(index_cmd+1, DEC); Serial.print(" of "); Serial.println(index_prog, DEC);
+      Serial.print("Waveform Repeat: "); Serial.print(numRepeat, DEC); Serial.print(" of "); Serial.println(waveRpt, DEC);
+      Serial.print("Run Time: "); Serial.print(time_run, DEC); Serial.println(" ms");
+      Serial.print("Sensor exp. LP cutoff: "); Serial.print(cutoff, DEC); Serial.println(" Hz");
+      Serial.print("Sensor moving average N: "); Serial.println(numReadings, DEC);
+      Serial.print("Sensor Zero value: "); Serial.println(sensorZero, DEC);
+      Serial.print("PID Interval: "); Serial.print(sampleTime, DEC); Serial.println(" ms");
+      Serial.print("PID parameters (working): "); Serial.print(valvePID.GetKp(), DEC); Serial.print(", "); Serial.print(valvePID.GetKi(), DEC); Serial.print(", "); Serial.println(valvePID.GetKd(), DEC);
+      Serial.print("PID parameters (hold): "); Serial.print(pid_hold.Kp, DEC); Serial.print(","); Serial.print(pid_hold.Ki, DEC); Serial.print(","); Serial.println(pid_hold.Kd, DEC);
+      Serial.print("PID parameters (track): "); Serial.print(pid_track.Kp, DEC); Serial.print(","); Serial.print(pid_track.Ki, DEC); Serial.print(","); Serial.println(pid_track.Kd, DEC);
+      Serial.print("Control Error Threshold: "); Serial.print(errorThrshld, DEC); Serial.println(" counts");
+      Serial.print("Controller Output: "); Serial.print((PID_ctrl*100), 1); Serial.println(" %");
+      Serial.print("Supply Valve Setting: "); Serial.println(VA_Out, DEC);
+      Serial.print("Vent Valve Setting:   "); Serial.println(VE_Out, DEC);
+      Serial.print("Valve Parameters: "); Serial.print(vaMin,DEC); Serial.print(","); Serial.print(vaSpan,DEC); Serial.print(","); Serial.print(veMin,DEC); Serial.print(","); Serial.println(veSpan,DEC);
+      Serial.print("Valve Compensation: "); Serial.print(vlvcomp[0],DEC); Serial.print(","); Serial.print(vlvcomp[1],DEC); Serial.print(","); Serial.println(vlvcomp[2],DEC);
+      Serial.print("Sending Data: "); Serial.println(sendData);
+      Serial.print("Data Interval: "); Serial.print(dataInterval); Serial.println(" ms");
+      Serial.print("Debug mode: "); Serial.println(debug);
       Serial.println("OK");
     }
 
@@ -538,28 +612,7 @@ void loop() {
       }
     }
     
-    else if (inputString.startsWith("st")) {   // return status information
-      Serial.print("Controlling Pressure: "); Serial.println(valvePID.GetMode());
-      Serial.print("Running Waveform List: "); Serial.println(runList);
-      Serial.print("Programmed Waveform: "); Serial.print(index_cmd+1, DEC); Serial.print(" of "); Serial.println(index_prog, DEC);
-      Serial.print("Target Pressure: "); Serial.print(targetPressure, 3); Serial.println(" counts");
-      Serial.print("Current Pressure: "); Serial.print(currentPressure, 3); Serial.println(" counts");
-      Serial.print("Run Time: "); Serial.print(time_run, DEC); Serial.println(" ms");
-      Serial.print("PID Interval: "); Serial.print(sampleTime, DEC); Serial.println(" ms");
-      Serial.print("PID parameters (working): "); Serial.print(valvePID.GetKp(), DEC); Serial.print(", "); Serial.print(valvePID.GetKi(), DEC); Serial.print(", "); Serial.println(valvePID.GetKd(), DEC);
-      Serial.print("PID parameters (hold): "); Serial.print(pid_hold.Kp, DEC); Serial.print(","); Serial.print(pid_hold.Ki, DEC); Serial.print(","); Serial.println(pid_hold.Kd, DEC);
-      Serial.print("PID parameters (track): "); Serial.print(pid_track.Kp, DEC); Serial.print(","); Serial.print(pid_track.Ki, DEC); Serial.print(","); Serial.println(pid_track.Kd, DEC);
-      Serial.print("Control Error Threshold: "); Serial.print(errorThrshld, DEC); Serial.println(" counts");
-      Serial.print("Sensor exp. LP cutoff: "); Serial.print(cutoff, DEC); Serial.println(" Hz");
-      Serial.print("Sensor moving average N: "); Serial.println(numReadings, DEC);
-      Serial.print("Sensor Zero value: "); Serial.println(sensorZero, DEC);
-      Serial.print("Controller Output: "); Serial.print((PID_ctrl*100), 1); Serial.println(" %");
-      Serial.print("Valve Parameters: "); Serial.print(vaMin,DEC); Serial.print(","); Serial.print(vaSpan,DEC); Serial.print(","); Serial.print(veMin,DEC); Serial.print(","); Serial.println(veSpan,DEC);
-      Serial.print("Supply Valve Setting: "); Serial.println(VA_Out, DEC);
-      Serial.print("Vent Valve Setting:   "); Serial.println(VE_Out, DEC);
-      Serial.print("Debug mode: "); Serial.println(debug);
-      Serial.println("OK");
-    }
+
     
     else if (inputString.startsWith("w")) {   // command for adding a waveform (wc, ws, etc)
       if (index_prog < max_waveforms) {
@@ -924,32 +977,21 @@ void blinker(int LED_pin, int numblink) {
  */
 void applyControl(double *PID_ctrl, byte *VA_Out, byte *VE_Out) {
 
-  if (debug) Serial.print("CTRL: ");
   // Determine output from control signal
   // Use this function to linearize valve action
   // PID_ctrl is output from PID. Has range 0 - 1
   // Valves use PWM output with range 8-bit (0-255)
   // However, valves appear to have poor response to extreme PWM values, so convert
   //  PID_ctrl into two symmetric values between min and max for each valve
-  if (debug) Serial.print(*PID_ctrl,DEC);
-  if (debug) Serial.print(",");
-  *VA_Out = round(*PID_ctrl * vaSpan) + vaMin;
-  if (debug) Serial.print(*VA_Out,DEC);
-  if (*VA_Out <= vaMin) *VA_Out = VCLOSED;
-  if (*VA_Out > vaMin+vaSpan) *VA_Out = VOPEN;
 
-  if (debug) Serial.print(",");
+  *VA_Out = round(*PID_ctrl * vaSpan) + vaMin;
 
   *VE_Out = round((1 - *PID_ctrl) * veSpan) + veMin;
-  if (debug) Serial.print(*VE_Out,DEC);
-  if (*VE_Out <= veMin) *VE_Out = VCLOSED;
-  if (*VE_Out > veMin+veSpan) *VE_Out = VOPEN;
 
   // sends the outputs to the appropiate pins
   analogWrite(VACUUM, *VA_Out);
   analogWrite(VENT, *VE_Out);
 
-  if (debug) Serial.println(";");
 }
 
 
@@ -978,31 +1020,25 @@ void parseWave(String cmdstr, unsigned long *wPer, double *wFreq, int *wAmp, int
   *wPer = arg.toInt();                // in ms
   *wFreq = 1 / (double)*wPer * 1000;  // in Hz
   beginIdx = idx + 1;
-  //Serial.print("*wPer: "); Serial.println(*wPer, DEC);
-  //Serial.print("*wFreq: "); Serial.println(*wFreq, DEC);
   
   idx = cmdstr.indexOf(",",beginIdx);
   arg = cmdstr.substring(beginIdx, idx);
   *wAmp = arg.toInt();
   beginIdx = idx + 1;
-  //Serial.print("*wAmp: "); Serial.println(*wAmp, DEC);
 
   idx = cmdstr.indexOf(",",beginIdx);
   arg = cmdstr.substring(beginIdx, idx);
   *wOffset = arg.toInt();
   beginIdx = idx + 1;
-  //Serial.print("*wOffset: "); Serial.println(*wOffset, DEC);
 
   idx = cmdstr.indexOf(",",beginIdx);
   arg = cmdstr.substring(beginIdx, idx);
   *wDuty = arg.toInt();
   beginIdx = idx + 1;
-  //Serial.print("*wDuty: "); Serial.println(*wDuty, DEC);
 
   idx = cmdstr.indexOf(",",beginIdx);
   arg = cmdstr.substring(beginIdx, idx);
   *wTime = arg.toInt(); 
-  //beginIdx = idx + 1;
 
   return;
 }
