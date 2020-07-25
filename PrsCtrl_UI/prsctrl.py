@@ -5,7 +5,7 @@
 #
 # M. Hopcroft
 #   hopcroft@reddogresearch.com
-# Copyright 2020
+# Copyright 2018
 #
 # This software is distributed under the terms of the MIT License
 #
@@ -32,8 +32,9 @@
 # SOFTWARE.
 #
 
-from __future__ import division
-from __future__ import print_function
+# from __future__ import division
+# from __future__ import print_function
+
 # add path for other components
 import sys, os, time
 # serial port library (pip install pyserial)
@@ -50,7 +51,7 @@ import glob
 import curses
 import curses.textpad as textpad
 
-versionstr = "prsctrl v2.0beta"
+versionstr = "prsctrl v2.1"
 
 # conversion factors for pressure
 CountsPerkPa = 3.9605	# conversion factor for the Honeywell ASDXRRX015 sensor
@@ -128,11 +129,12 @@ def prsScreen(stdscr,s,verbose=1):
 	curses.cbreak() # react to keypress
 
 	# use a small window, vt100 compatible
-	screen1 = stdscr.subwin(23,79,0,0) # height, width, originY, originX
+	screen1 = stdscr.subwin(24,79,0,0) # height, width, originY, originX
 	screen1.clear()
 	screen1.nodelay(1)	# set getch() to non-blocking
 
 	# get controller settings
+	verstr = sendcmd(s,'vr',verbose)
 	SensorZero = getval(s,'sz',verbose)	# get sensor zero value
 	cmode = getval(s,'ct',verbose)	# are we controlling pressure?
 	rmode = getval(s,'rn',verbose)	# are we running a waveform?
@@ -140,45 +142,51 @@ def prsScreen(stdscr,s,verbose=1):
 	prs = (float(sendcmd(s,'gp',verbose).split(',')[1]) - SensorZero)/CountsPerkPa	# get current pressure
 	va = getval(s,'va',verbose)
 	ve = getval(s,'ve',verbose)
+	numWaveforms = 0  # how many waveforms loaded
+	waveRepeat = 1  # how many times to repeat waveform list
 
 	# initialize the menu items
 	menu={}
-	menu['version']=versionstr
+	menu['version'] = versionstr
 	# set ascii graphic display of valve status
 	if va==0 and ve==0:
-		menu['valvepos']="S - | -+- | - V"
+		menu['valvepos'] = "S - \ -+- \ - V"
 	elif va==255 and ve==0:
-		menu['valvepos']="S - = -+- | - V"
+		menu['valvepos'] = "S - = -+- \ - V"
 	elif va==0 and ve==255:
-		menu['valvepos']="S - | -+- = - V"
+		menu['valvepos'] = "S - \ -+- = - V"
 	elif va==255 and ve==255:
-		menu['valvepos']="S - = -+- = - V"
+		menu['valvepos'] = "S - = -+- = - V"
 	else:
-		menu['valvepos']="S - X -+- X - V"
+		menu['valvepos'] = "S - X -+- X - V" # X for valves in intermediate state
 
 	if cmode == 0:
-		menu['control']="[G] Start Control"
+		menu['control'] = "[G] Start Control"
 	else:
-		menu['control']="[G] Stop Control"
-		menu['valvepos']="S - C -+- C - V" # ascii graphic display of valve status
+		menu['control'] = "[G] Stop Control"
+		menu['valvepos'] = "S - C -+- C - V" # ascii graphic display of valve status
 
-	menu['pressure']="Pressure: {:.1f} kPa".format(prs)
-	menu['setpoint']="[P] Pressure Setpoint: {:.1f} kPa".format(setp)
-	menu['loadwave']="[L] Load Wave File (0)"
+	menu['pressure'] = "Pressure: {:.1f} kPa".format(prs)
+	menu['setpoint'] = "[P] Pressure Setpoint: {:.1f} kPa".format(setp)
+	menu['loadwave'] = "[L] Load Wave File (0)"
 	#menu['uploadwave']="[U] Upload to Controller"
 	if rmode == 0:
-		menu['runwave']="[R] Run Waveforms"
+		menu['runwave'] = "[R] Run Waveforms"
 	else:
-		menu['runwave']="[R] Stop Waveforms"
-		menu['valvepos']="S - R -+- R - V" # ascii graphic display of valve status
+		menu['runwave'] = "[R] Stop Waveforms"
+		menu['valvepos'] = "S - R -+- R - V" # ascii graphic display of valve status
+	menu['waverepeat'] = "[N] Number of Iterations (1)"
 
-	menu['valveopen']="[O] Open Valves"
-	menu['valveclose']="[C] Close Valves"
-	menu['valvesupply']="[S] Supply Pressure"
-	menu['valvevent']="[V] Vent Pressure"
-	menu['settings']="[Z] Settings"
+	menu['valveopen'] = "[O] Open Valves"
+	menu['valveclose'] = "[C] Close Valves"
+	menu['valvesupply'] = "[S] Supply Pressure"
+	menu['valvevent'] = "[V] Vent Pressure"
+	menu['settings'] = "[Z] Settings"
 
-	menu['quit']="[Q] Quit the Program"
+	menu['quit'] = "[Q] Quit the Program"
+
+	menu['feedback'] = verstr
+	menu['response'] = ""
 
 	while True:
 		screen1.border(0)
@@ -196,23 +204,27 @@ def prsScreen(stdscr,s,verbose=1):
 		screen1.addstr(10, 4, menu['loadwave'])
 		#screen1.addstr(11, 4, menu['uploadwave'])
 		screen1.addstr(11, 4, menu['runwave'])
+		screen1.addstr(12, 4, menu['waverepeat'])
 
-		screen1.addstr(13, 3, "Valve Operation", curses.A_BOLD)
-		screen1.addstr(14, 4, menu['valveclose'])
-		screen1.addstr(14, 30, menu['valveopen'])
-		screen1.addstr(15, 4, menu['valvesupply'])
-		screen1.addstr(15, 30, menu['valvevent'])
+		screen1.addstr(14, 3, "Valve Operation", curses.A_BOLD)
+		screen1.addstr(15, 4, menu['valveclose'])
+		screen1.addstr(15, 30, menu['valveopen'])
+		screen1.addstr(16, 4, menu['valvesupply'])
+		screen1.addstr(16, 30, menu['valvevent'])
 
-		screen1.addstr(18, 3, menu['settings'])
+		screen1.addstr(19, 3, menu['settings'])
 
-		screen1.addstr(20, 3, menu['quit'])
+		screen1.addstr(21, 3, menu['quit'])
 
 		# status display
 		screen1.addstr(10, 50, menu['pressure'])
 		screen1.addstr(12, 52, menu['valvepos'])
 		screen1.addstr(11, 59, "|")
 
-		screen1.addstr(4, 20, "") # put the cursor
+		screen1.addstr(4, 30, menu['feedback'])
+		#screen1.addstr(4, 21, "") # put the cursor at "Make a Selection"
+
+		screen1.addstr(21,70, menu['response'])
 
 		screen1.refresh() # redraw screen
 
@@ -222,13 +234,20 @@ def prsScreen(stdscr,s,verbose=1):
 			kp = screen1.getch() # capture keypress
 			time.sleep(0.2)
 			# get new pressure reading and update window
-			prs = (float(sendcmd(s,'gp',0).split(',')[1]) - SensorZero)/CountsPerkPa
-			menu['pressure']="Pressure: {:.1f} kPa    ".format(prs)
-			screen1.addstr(10, 50, menu['pressure'])
-			screen1.addstr(4, 20, "") # put the cursor at bottom of text
+			try:
+				prs = (float(sendcmd(s,'gp',0).split(',')[1]) - SensorZero)/CountsPerkPa
+				menu['pressure']="Pressure: {:.1f} kPa    ".format(prs)
+				screen1.addstr(10, 50, menu['pressure'])
+			except:
+				continue
+
+			screen1.addstr(4, 21, "") # put the cursor at "Make a Selection"
 
 			screen1.refresh() # redraw screen
 
+		# erase the feedback line
+		menu['feedback'] = "                                        " # 40 spaces
+		menu['response'] = "       " # 7 spaces
 
 		## Handle keypresses
 		if kp == ord('G') or kp == ord('g'):	# control pressure
@@ -236,11 +255,13 @@ def prsScreen(stdscr,s,verbose=1):
 			if cmode == 0:
 				r = sendcmd(s,'ct1',0)
 				menu['control']="[G] Stop Control "
-				menu['valvepos']="S - C -+- C - V"
+				menu['valvepos']="S - C -+- C - V" # C for controlling pressure
 			else:
 				r = sendcmd(s,'ct0',0)
 				menu['control']="[G] Start Control"
-				menu['valvepos']="S - X -+- X - V"
+				menu['valvepos']="S - X -+- X - V" # X for valves in unknown state
+
+			if verbose >=2: menu['response'] = r+"    " # display controller response
 
 
 		if kp == ord('P') or kp == ord('p'):	# pressure setpoint
@@ -250,9 +271,9 @@ def prsScreen(stdscr,s,verbose=1):
 				r = sendcmd(s,cmd,0)
 				if r == 'OK':
 					menu['setpoint']="[P] Pressure Setpoint: {:.1f} kPa   ".format(userinp)
-
 				else:
-					print("ERROR: Unable to set pressure setpoint!")
+					scrMessage(stdscr,"ERROR: Unable to set pressure setpoint!")
+				if verbose >=2: menu['response'] = r+"    " # display controller response
 			except:
 				continue
 
@@ -260,24 +281,30 @@ def prsScreen(stdscr,s,verbose=1):
 		if kp == ord('C') or kp == ord('c'):	# close valves
 			r = sendcmd(s,'cl',0)
 			if r == 'OK':
-				menu['valvepos']="S - | -+- | - V"
+				menu['valvepos']="S - \ -+- \ - V"
+			if verbose >=2: menu['response'] = r+"    " # display controller response
 
 		if kp == ord('O') or kp == ord('o'):	# open valves
 			r = sendcmd(s,'op',0)
 			if r == 'OK':
 				menu['valvepos']="S - = -+- = - V"
+			if verbose >=2: menu['response'] = r+"    " # display controller response
 
 		if kp == ord('S') or kp == ord('s'):	# supply valves
 			r = sendcmd(s,'va255',0)
 			r = sendcmd(s,'ve0',0)
 			if r == 'OK':
-				menu['valvepos']="S - = -+- | - V"
+				menu['valvepos']="S - = -+- \ - V"
+			if verbose >=2: menu['response'] = r+"    " # display controller response
+
 
 		if kp == ord('V') or kp == ord('v'):	# vent valves
 			r = sendcmd(s,'ve255',0)
 			r = sendcmd(s,'va0',0)
 			if r == 'OK':
-				menu['valvepos']="S - | -+- = - V"
+				menu['valvepos']="S - \ -+- = - V"
+			if verbose >=2: menu['response'] = r+"    " # display controller response
+
 
 		if kp == ord('L') or kp == ord('l'):	# load waveforms from file
 			fname = scrUserInp(stdscr,"Enter the waveform filename: ")
@@ -286,29 +313,56 @@ def prsScreen(stdscr,s,verbose=1):
 					wavedesc = [line.rstrip('\n') for line in f]
 				if wavedesc[0] != 'Waveform List':
 					curses.beep()
+					scrMessage(stdscr,"ERROR: File is not a Waveform List")
 				else:
 					del wavedesc[0]
 					# create and send a command for each waveform
 					for w in wavedesc:
-						cmd = parseWave(w)
+						cmd = parseWave(w,CountsPerkPa,SensorZero)
 						r = sendcmd(s,cmd,0)
+					numWaveforms = len(wavedesc)
 
-					menu['loadwave']="[L] Load Wave File ({0})".format(len(wavedesc))
+					menu['feedback'] = "Loaded {0} waveforms from file".format(numWaveforms)
+					menu['loadwave']="[L] Load Wave File ({0})   ".format(numWaveforms)
 			else:
 				curses.beep()
 				scrMessage(stdscr,"ERROR: File not found")
 
 
 		if kp == ord('R') or kp == ord('r'):	# run waveforms
-			cmode = getval(s,'rn',0)	# are we running?
-			if cmode == 0:
-				r = sendcmd(s,'rn1',0)
-				menu['runwave']="[R] Stop Waveforms "
-				menu['valvepos']="S - R -+- R - V"
+			if numWaveforms <= 0:
+				scrMessage(stdscr,"ERROR: No waveforms loaded")
 			else:
-				r = sendcmd(s,'rn0',0)
-				menu['runwave']="[R] Run Waveforms"
-				menu['valvepos']="S - C -+- C - V"
+				cmode = getval(s,'rn',0)	# are we running?
+				if cmode == 0:
+					r = sendcmd(s,'rn1,{:.0f}'.format(waveRepeat),0)
+					if r == 'OK':
+						menu['runwave'] = "[R] Stop Waveforms  "
+						menu['valvepos'] = "S - R -+- R - V" # R for running waveforms
+						menu['feedback'] = "Waveform list started at " + time.strftime("%H:%M:%S",time.localtime())
+
+					else:
+						menu['feedback'] = "[Problem with Run command]"
+				else:
+					r = sendcmd(s,'rn0',0)
+					if r == 'OK':
+						menu['runwave'] = "[R] Run Waveforms  "
+						menu['valvepos'] = "S - C -+- C - V" # C for controlling pressure
+						menu['feedback'] = "Waveform list stopped              "
+					else:
+						menu['feedback'] = "[Problem with Stop command]"
+
+				if verbose >=2: menu['response'] = r+"    " # display controller response
+
+
+		if kp == ord('N') or kp == ord('n'):	# set number of repeats
+			newWaveRepeat = str(scrUserInp(stdscr,"Number of iterations for the waveform list: ").decode('ascii'))
+			if newWaveRepeat.isdecimal():
+				waveRepeat = int(newWaveRepeat)
+				menu['waverepeat'] = "[N] Number of Iterations ({0})   ".format(waveRepeat)
+			else:
+				scrMessage(stdscr,"ERROR: Must enter a positive number")
+			print(newWaveRepeat)
 
 
 		if kp == ord('Z') or kp == ord('z'):	# controller settings
@@ -317,8 +371,13 @@ def prsScreen(stdscr,s,verbose=1):
 			except:
 				continue
 
+
 		if kp == ord('Q'):	# quit program
 			break
+
+		if kp == ord('q'):  # use Q to Quit
+			menu['feedback'] = "(Use 'q' to Quit the Program)"
+
 
 	curses.endwin() # call at program exit
 
@@ -392,7 +451,7 @@ def settingsWindow(stdscr,s):
 		screen2.addstr(12, 2, menu['saveset'])
 		screen2.addstr(13, 2, "[X] Exit settings")
 
-		screen2.addstr(2, 21, "") # put the cursor
+		screen2.addstr(2, 22, "") # put the cursor
 
 		screen2.refresh()
 		kp = screen2.getch() # capture keypress
@@ -401,13 +460,14 @@ def settingsWindow(stdscr,s):
 		if kp == ord('Z') or kp == ord('z'):	# sensor zero
 			userinp = int(scrUserInp(stdscr,"Enter the Sensor Zero value (counts): "))
 			screen2.refresh()
-			cmd = "sz{:.0f}".format(userinp)
-			r = sendcmd(s,cmd,0)
+			#cmd = "sz{:.0f}".format(userinp)
+			r = sendcmd(s,"sz{:.0f}".format(userinp),0)
 			if r == 'OK':
 				SensorZero = getval(s,'sz',0)
 				menu['sensorzero']="[Z] Sensor Zero ({:.0f})  ".format(SensorZero)
 			else:
 				scrMessage(stdscr,"ERROR: Unable to set sensor zero value!")
+
 
 		if kp == ord('F') or kp == ord('f'):	# sensor filter
 			userinp = int(scrUserInp(stdscr,"Enter the Moving Average bin size (N): "))
@@ -451,8 +511,9 @@ def settingsWindow(stdscr,s):
 			else:
 				scrMessage(stdscr,"ERROR: Unable to set PID parameters")
 
-		if kp == ord('S') or kp == ord('S'):
+		if kp == ord('S') or kp == ord('s'):
 			r = sendcmd(s,'sv',0)
+			print(r)
 			if r == 'OK':
 				scrMessage(stdscr,"Settings saved to Controller flash memory")
 			else:
@@ -576,7 +637,7 @@ def get_port_name(devdir="/dev/",verbose=1):
 
 ####
 # create a command string from a wave description
-def parseWave(wavedesc):
+def parseWave(wavedesc,CountsPerkPa=3.9605,SensorZero=512):
 	wave = wavedesc.split(',')
 	# wave type
 	if wave[0] == 'Constant':

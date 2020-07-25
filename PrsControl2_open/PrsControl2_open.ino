@@ -119,7 +119,7 @@ int wDuty[max_waveforms];           // the Duty Cycle
 unsigned long wTime[max_waveforms]; // the execution Time
 boolean runList = false;  // are we executing the list or not
 int numRepeat = 0; // how many times has the waveform list repeated
-int waveRpt = 0; // how many times is the waveform list allowed to repeat
+int waveRpt = 1; // how many times is the waveform list allowed to repeat
 
 // EEPROM addresses (memory map) in bytes offset from zero.
 //     1024 bytes total on Atmega328 (Uno, Duemilanove)
@@ -130,7 +130,7 @@ const int filterN_addr = 66;  // int numReadings
 const int filterLP_addr = 68; // int cutoff
 const int sensorZero_addr = 70; // int sensorZero
 const int sampleTime_addr = 72; // int sampleTime (for PID controller)
-const int valveMinMax_addr = 78; // four bytes: vaMin, vaSpan, veMin, veSpan
+const int valveMinMax_addr = 74; // four bytes: vaMin, vaSpan, veMin, veSpan
 
 // time keeping
 unsigned long dTime = 0;
@@ -142,7 +142,7 @@ unsigned long time_errMax = 0;
 
 // functions
 int sendData = 0;               // continuously transmit data to USB host
-int makeData = 5;               // timer for data generation, default 5 ms
+int makeData = 10;              // timer for data generation, default 10 ms
 int dataInterval = 50;          // transmit data periodically, default 50 ms = 20 Hz
 int printData = dataInterval;   // timer for data transmission
 boolean debug = true;           // print debug messages
@@ -231,11 +231,14 @@ void setup() {
   // set the PID controller with the saved values
   valvePID.SetTunings(pid_hold.Kp, pid_hold.Ki, pid_hold.Kd);
 
-  // initialize the control pins as outputs for PWM
-  // set the pwm frequency for pins 3,11 to 1 kHz using Timer2
+  // initialize the control pins as outputs for PWM and
+  //  set the PWM frequency for pins 3,11 to ~1 kHz using Timer2
+  //  See: https://arduinoinfo.mywikis.net/wiki/Arduino-PWM-Frequency
   TCCR2B = TCCR2B & B11111000 | B00000011;    // set timer 2 divisor to 32 for PWM frequency of 980.39 Hz
+  //TCCR2B = TCCR2B & B11111000 | B00000010;    // set timer 2 divisor to 8 for PWM frequency of 3921.16 Hz
   pinMode(VENT, OUTPUT);
   pinMode(VACUUM, OUTPUT);
+  
   // initialize both valves to closed position
   analogWrite(VACUUM, VCLOSED);
   analogWrite(VENT, VCLOSED);
@@ -253,7 +256,7 @@ void setup() {
   valvePID.SetOutputLimits(0,1);            // control signal limits
 
   // configure Timer1 to read the pressure sensor at at regular interval
-  // http://www.instructables.com/id/Arduino-Timer-Interrupts/step2/Structuring-Timer-Interrupts/
+  // https://www.instructables.com/id/Arduino-Timer-Interrupts/step2/Structuring-Timer-Interrupts/
   TCCR1A = 0;// set entire TCCR1A register to 0
   TCCR1B = 0;// same for TCCR1B
   TCNT1  = 0;//initialize counter value to 0
@@ -302,10 +305,6 @@ void loop() {
   unsigned long time_loop = time_run - time_prev;
   time_prev = time_run;
 
-//  if (runList == false) {
-//    time_wave = time_run; // time for the current waveform step
-//  }
-
   ////////
   // Execute waveform program if runList is true
   // Compute target pressure for the current waveform program (const, sin, etc)
@@ -328,8 +327,11 @@ void loop() {
           targetPressure = rampWave(wPer[index_cmd], wAmp[index_cmd], wOffset[index_cmd], wDuty[index_cmd], time_cmd);
           break;
         case 'x':
-          Serial.println("Type x in list");
+          Serial.println(";"); // to interrupt data output
+          Serial.println("WSTP");
           runList = false;  // stop executing list
+          // go to "hold" settings in PID
+          valvePID.SetTunings(pid_hold.Kp, pid_hold.Ki, pid_hold.Kd);
           break;
       }
     } else { // advance to next waveform in list
@@ -337,7 +339,6 @@ void loop() {
       time_wave = millis(); // time_wave is start time of each waveform
       // waveform status output
       if (debug == true) {
-        //Serial.println(";"); // to interrupt data output
         Serial.print("WAVE"); Serial.println(index_cmd,DEC);
       }
       
@@ -436,7 +437,7 @@ void loop() {
   //  string format: (max 64 bytes incl LF)
   //   $time stamp,pressure sensor,target pressure,PID_value,vacuum_out,vent_out
   //  send rate of 10ms with baud rate of 57600 typically ok
-  // v22: generate data at one rate, and trigger host to processor data at another (slower) rate
+  // v22: generate data at one rate, and trigger host to process data at another (slower) rate
   // Note: the "comparison timer" is more reliable than the "mod timer"
   //   See: http://www.forward.com.au/pfod/ArduinoProgramming/TimingDelaysInArduino.html
 
@@ -504,7 +505,6 @@ void loop() {
       Serial.print("Supply Valve Setting: "); Serial.println(VA_Out, DEC);
       Serial.print("Vent Valve Setting:   "); Serial.println(VE_Out, DEC);
       Serial.print("Valve Parameters: "); Serial.print(vaMin,DEC); Serial.print(","); Serial.print(vaSpan,DEC); Serial.print(","); Serial.print(veMin,DEC); Serial.print(","); Serial.println(veSpan,DEC);
-      Serial.print("Valve Compensation: "); Serial.print(vlvcomp[0],DEC); Serial.print(","); Serial.print(vlvcomp[1],DEC); Serial.print(","); Serial.println(vlvcomp[2],DEC);
       Serial.print("Sending Data: "); Serial.println(sendData);
       Serial.print("Data Interval: "); Serial.print(dataInterval); Serial.println(" ms");
       Serial.print("Debug mode: "); Serial.println(debug);
@@ -575,6 +575,7 @@ void loop() {
         Serial.println("OK");
       }
     }
+    
 
     else if (inputString.startsWith("te")) {   // get time of control error, or reset warning
       if (inputString.length() == 2) {
@@ -583,32 +584,51 @@ void loop() {
       } else if (inputString[2] == '0') { // reset error warning
         time_err = 0;
         errorVal = 0;
+        errorMax = 0;
         exceededErr = false;
         digitalWrite(LED_status, LOW);
         Serial.println("OK");
       }
     }
         
-    else if (inputString.startsWith("rn")) {   // enable/disable executing waveform list
+    else if (inputString.startsWith("rn")) {   // control executing waveform list
       if (inputString.length() == 2) {
-         Serial.print("rn:"); Serial.println(runList,DEC);
+        Serial.print("rn:"); Serial.println(runList,DEC);
+         
       } else if (inputString[2] == '0') { // stop executing list
         runList = false;
         // go to "hold" PID parameters
         valvePID.SetTunings(pid_hold.Kp, pid_hold.Ki, pid_hold.Kd);
         Serial.println("OK");
-      } else if (inputString[2] == '1') { // start executing list
-        // set PID parameters according to waveform type
-        if (wType[index_cmd] == 'c') {
-          valvePID.SetTunings(pid_hold.Kp, pid_hold.Ki, pid_hold.Kd);
+        
+      } else { // start executing list at specified waveform
+        if (inputString.indexOf(",") >= 2) {
+          index_cmd = inputString.substring(2,inputString.indexOf(",")).toInt() - 1; // input is 1-indexed
+          waveRpt = inputString.substring(inputString.indexOf(",")+1).toInt();
         } else {
-          valvePID.SetTunings(pid_track.Kp, pid_track.Ki, pid_track.Kd);
+          index_cmd = inputString.substring(2,inputString.length()).toInt() - 1;          
         }
-        runList = true;
-        cmdControl = true;        
-        valvePID.SetMode(AUTOMATIC);
-        exceededErr = false;
-        Serial.println("OK");
+        if (index_cmd >= 0 && index_cmd < index_prog) {
+          // set PID parameters according to waveform type
+          if (wType[index_cmd] == 'c' || wType[index_cmd] == 'x') {
+            valvePID.SetTunings(pid_hold.Kp, pid_hold.Ki, pid_hold.Kd);
+          } else {
+            valvePID.SetTunings(pid_track.Kp, pid_track.Ki, pid_track.Kd);
+          }
+          // set the conditions for waveform execution
+          runList = true;
+          cmdControl = true;        
+          valvePID.SetMode(AUTOMATIC);
+          exceededErr = false;
+          time_wave = millis();
+          numRepeat = 0;
+
+          Serial.println("OK");
+          
+        } else { // command error
+          Serial.println("?");
+
+        }
       }
     }
     
@@ -618,15 +638,6 @@ void loop() {
       if (index_prog < max_waveforms) {
         wType[index_prog] = inputString[1];
         parseWave(inputString.substring(2,inputString.length()), &wPer[index_prog], &wFreq[index_prog], &wAmp[index_prog], &wOffset[index_prog], &wDuty[index_prog], &wTime[index_prog]);
-        // set the PID coefficients for the first waveform in the list
-        if (index_prog == 0) {
-          // set PID parameters according to waveform type
-          if (wType[index_prog] == 'c') {
-            valvePID.SetTunings(pid_hold.Kp, pid_hold.Ki, pid_hold.Kd);
-          } else {
-            valvePID.SetTunings(pid_track.Kp, pid_track.Ki, pid_track.Kd);
-          }          
-        }
         index_prog++;
         Serial.println("OK");
 
@@ -634,26 +645,8 @@ void loop() {
         Serial.println("?");
       }
     }
- 
-    else if (inputString.startsWith("ci")) { // select which waveform to execute
-      if (inputString.length() == 2) {
-        Serial.print("ci:"); Serial.println(index_cmd, DEC);
-      } else {
-        index_cmd = inputString.substring(2,inputString.length()).toInt();
-        if (index_cmd >= index_prog) {
-          Serial.println("?");
-        } else {
-          // set PID parameters according to waveform type
-          if (wType[index_cmd] == 'c') {
-            valvePID.SetTunings(pid_hold.Kp, pid_hold.Ki, pid_hold.Kd);
-          } else {
-            valvePID.SetTunings(pid_track.Kp, pid_track.Ki, pid_track.Kd);
-          }
-          time_wave = millis();
-          Serial.println("OK");
-        }
-      }
-    }
+
+
     
     else if (inputString.startsWith("cw")) {   // clear waveform program list
       initWaveforms(max_waveforms, &index_prog, &index_cmd, wType, wAmp, wOffset, wPer, wFreq, wDuty, wTime);
@@ -661,19 +654,23 @@ void loop() {
       Serial.println("OK");
     }
 
-    else if (inputString.startsWith("rs")) {   // restart waveform program list
-      index_cmd = 0;
-      time_wave = millis();
-      runList = true;
-      cmdControl = true;
-      valvePID.SetMode(AUTOMATIC);
-      Serial.println("OK");
+
+    else if (inputString.startsWith("nr")) {   // report waveform counter
+      if (inputString.length() == 2) {
+        Serial.print("nr:"); Serial.println(numRepeat,DEC);
+      } else {
+        Serial.println("?");
+      } 
     }
+
+
 
     else if (inputString.startsWith("gp")) {   // send current pressure measurement
       Serial.print("gp:"); Serial.print(millis(), DEC);Serial.print(","); Serial.println(currentPressure, DEC);
     }
-        
+
+
+
     else if (inputString.startsWith("pd")) {   // get current PID parameters
       if (inputString.length() == 2) {
         Serial.print("pd:");
@@ -682,7 +679,9 @@ void loop() {
         Serial.println("?");
       }
     }
-    
+
+
+
     else if (inputString.startsWith("ph")) {   // set PID parameters (hold)
       if (inputString.length() == 2) {
         Serial.print("ph:");
@@ -716,6 +715,8 @@ void loop() {
 
       }
     }
+
+
 
     else if (inputString.startsWith("pt")) {   // set PID parameters (track)
       if (inputString.length() == 2) {
@@ -791,7 +792,19 @@ void loop() {
         sei();  //allow interrupts
       }
     }
-  
+
+
+    else if (inputString.startsWith("sd")) {   // enable/disable stream data to host. Value equals timer delay in ms
+      if (inputString.length() == 2) {
+        Serial.print("sd:");  Serial.println(sendData,DEC);
+      } else {
+        sendData = inputString.substring(2,inputString.length()).toInt();
+        makeData = sendData;
+        Serial.println("OK");
+      }
+    }
+
+
     else if (inputString.startsWith("va")) {   // "manually" set vacuum valve position
       if (inputString.length() == 2) {
          Serial.print("va:"); Serial.println(VA_Out,DEC);
@@ -988,7 +1001,7 @@ void applyControl(double *PID_ctrl, byte *VA_Out, byte *VE_Out) {
 
   *VE_Out = round((1 - *PID_ctrl) * veSpan) + veMin;
 
-  // sends the outputs to the appropiate pins
+  // sends the outputs to the appropriate pins
   analogWrite(VACUUM, *VA_Out);
   analogWrite(VENT, *VE_Out);
 
